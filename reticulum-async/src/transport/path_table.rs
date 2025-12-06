@@ -2,7 +2,7 @@ use std::{collections::HashMap, time::Instant};
 
 use reticulum_core::{
     hash::{AddressHash, Hash},
-    packet::{DestinationType, Header, HeaderType, IfacFlag, Packet, PacketType},
+    packet::{DestinationType, Header, HeaderType, IfacFlag, Packet, PacketType, PropagationType},
 };
 
 pub struct PathEntry {
@@ -87,19 +87,49 @@ impl PathTable {
             None => return (*original_packet, None),
         };
 
+        // Calculate remaining hops to destination
+        // entry.hops = total hops from announce
+        // original_packet.header.hops = hops already taken
+        // +1 = the hop we're about to take
+        let remaining_hops = entry.hops.saturating_sub(original_packet.header.hops + 1);
+
+        log::debug!(
+            "handle_inbound_packet: dst={} total_hops={} taken={} remaining={}",
+            original_packet.destination,
+            entry.hops,
+            original_packet.header.hops,
+            remaining_hops
+        );
+
+        // Determine packet format based on remaining hops
+        // This matches Python RNS/Transport.py:1343-1354
+        let (header_type, propagation_type, transport) = if remaining_hops > 1 {
+            // Multi-hop: keep transport header with next hop
+            log::trace!("Multi-hop routing: keeping Type2/Transport header");
+            (HeaderType::Type2, PropagationType::Transport, Some(entry.received_from))
+        } else if remaining_hops == 1 {
+            // Final hop: STRIP transport header (Python does this at line 1350-1354)
+            log::debug!("Final hop: stripping transport header to Type1/Broadcast");
+            (HeaderType::Type1, PropagationType::Broadcast, None)
+        } else {
+            // Destination is directly reachable (0 hops remaining)
+            log::trace!("Direct delivery: no transport header needed");
+            (HeaderType::Type1, PropagationType::Broadcast, None)
+        };
+
         (
             Packet {
                 header: Header {
-                    ifac_flag: IfacFlag::Authenticated,
-                    header_type: HeaderType::Type2,
-                    propagation_type: original_packet.header.propagation_type,
+                    ifac_flag: original_packet.header.ifac_flag,  // Preserve original IFAC flag
+                    header_type,
+                    propagation_type,
                     destination_type: original_packet.header.destination_type,
                     packet_type: original_packet.header.packet_type,
                     hops: original_packet.header.hops + 1,
                 },
-                ifac: None,
+                ifac: original_packet.ifac,  // Preserve original IFAC if present
                 destination: original_packet.destination,
-                transport: Some(entry.received_from),
+                transport,
                 context: original_packet.context,
                 data: original_packet.data,
             },
@@ -133,19 +163,23 @@ impl PathTable {
             None => return (*original_packet, None),
         };
 
+        // For local destinations (1 hop), keep original propagation and no transport_id
+        // For multi-hop destinations (2+ hops), use Transport propagation with transport_id
+        let is_multihop = entry.hops > 1;
+
         (
             Packet {
                 header: Header {
-                    ifac_flag: IfacFlag::Authenticated,
-                    header_type: HeaderType::Type2,
-                    propagation_type: original_packet.header.propagation_type,
+                    ifac_flag: original_packet.header.ifac_flag,  // Always preserve original IFAC flag
+                    header_type: if is_multihop { HeaderType::Type2 } else { original_packet.header.header_type },
+                    propagation_type: if is_multihop { PropagationType::Transport } else { original_packet.header.propagation_type },
                     destination_type: original_packet.header.destination_type,
                     packet_type: original_packet.header.packet_type,
                     hops: original_packet.header.hops,
                 },
-                ifac: original_packet.ifac,
+                ifac: original_packet.ifac,  // Always preserve original IFAC if present
                 destination: original_packet.destination,
-                transport: Some(entry.received_from),
+                transport: if is_multihop { Some(entry.received_from) } else { None },
                 context: original_packet.context,
                 data: original_packet.data,
             },

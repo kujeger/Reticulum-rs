@@ -3,7 +3,7 @@ use tokio::time::{Duration, Instant};
 
 use reticulum_core::destination::link::LinkId;
 use reticulum_core::hash::AddressHash;
-use reticulum_core::packet::{Header, HeaderType, IfacFlag, Packet};
+use reticulum_core::packet::{Header, HeaderType, IfacFlag, Packet, PropagationType};
 
 pub struct LinkEntry {
     pub timestamp: Instant,
@@ -22,7 +22,7 @@ fn send_backwards(packet: &Packet, entry: &LinkEntry) -> (Packet, AddressHash) {
         header: Header {
             ifac_flag: IfacFlag::Authenticated,
             header_type: HeaderType::Type2,
-            propagation_type: packet.header.propagation_type,
+            propagation_type: PropagationType::Transport, // Use Transport for routed packets
             destination_type: packet.header.destination_type,
             packet_type: packet.header.packet_type,
             hops: packet.header.hops + 1,

@@ -259,10 +259,22 @@ impl<E: LinkEventSink> Link<E> {
         }
 
         match packet.context {
-            PacketContext::None => {
+            // Resource packets are NOT encrypted by the link layer
+            // (Python RNS: "A resource takes care of encryption by itself")
+            PacketContext::Resource => {
+                log::trace!("link({}): resource data {}B (unencrypted)", self.id, packet.data.len());
+                self.request_time = Instant::now();
+                self.post_event(LinkEvent::Data(LinkPayload::new_from_slice(packet.data.as_slice())));
+            }
+            // All other contexts use link-layer encryption
+            PacketContext::None | PacketContext::Response | PacketContext::Request
+            | PacketContext::ResourceAdvrtisement
+            | PacketContext::ResourceRequest | PacketContext::ResourceHashUpdate
+            | PacketContext::ResourceProof | PacketContext::ResourceInitiatorCancel
+            | PacketContext::ResourceReceiverCancel => {
                 let mut buffer = [0u8; PACKET_MDU];
                 if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
-                    log::trace!("link({}): data {}B", self.id, plain_text.len());
+                    log::trace!("link({}): data {}B (context={:?})", self.id, plain_text.len(), packet.context);
                     self.request_time = Instant::now();
                     self.post_event(LinkEvent::Data(LinkPayload::new_from_slice(plain_text)));
                 } else {
@@ -281,7 +293,9 @@ impl<E: LinkEventSink> Link<E> {
                     return LinkHandleResult::None;
                 }
             }
-            _ => {}
+            _ => {
+                log::debug!("link({}): ignoring packet with context {:?}", self.id, packet.context);
+            }
         }
 
         LinkHandleResult::None

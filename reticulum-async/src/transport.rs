@@ -104,7 +104,7 @@ struct TransportHandler {
     iface_manager: Arc<Mutex<InterfaceManager>>,
     announce_tx: broadcast::Sender<AnnounceEvent>,
 
-    path_table: PathTable,
+    path_table: Mutex<PathTable>,
     announce_table: AnnounceTable,
     link_table: LinkTable,
     single_in_destinations: HashMap<AddressHash, Arc<Mutex<SingleInputDestination>>>,
@@ -196,7 +196,7 @@ impl Transport {
             iface_manager: iface_manager.clone(),
             announce_table: AnnounceTable::new(),
             link_table: LinkTable::new(),
-            path_table: PathTable::new(),
+            path_table: Mutex::new(PathTable::new()),
             single_in_destinations: HashMap::new(),
             single_out_destinations: HashMap::new(),
             announce_limits: AnnounceLimits::new(),
@@ -233,7 +233,14 @@ impl Transport {
     }
 
     pub async fn outbound(&self, packet: &Packet) {
-        let (packet, maybe_iface) = self.handler.lock().await.path_table.handle_packet(packet);
+        let (packet, maybe_iface) = self
+            .handler
+            .lock()
+            .await
+            .path_table
+            .lock()
+            .await
+            .handle_packet(packet);
 
         if let Some(iface) = maybe_iface {
             self.send_direct(iface, packet.clone()).await;
@@ -483,9 +490,30 @@ impl Drop for Transport {
 
 impl TransportHandler {
     async fn send_packet(&self, packet: Packet) {
-        let message = TxMessage {
-            tx_type: TxMessageType::Broadcast(None),
-            packet,
+        // Use path table to route the packet for multi-hop support
+        let (routed_packet, maybe_iface) = self.path_table.lock().await.handle_packet(&packet);
+
+        let message = if let Some(iface) = maybe_iface {
+            // Route to specific interface for destination-specific packets
+            log::debug!(
+                "Routing packet to interface {}: type={:?} hdr={:?} prop={:?} dst={} transport={:?}",
+                iface,
+                routed_packet.header.packet_type,
+                routed_packet.header.header_type,
+                routed_packet.header.propagation_type,
+                routed_packet.destination,
+                routed_packet.transport
+            );
+            TxMessage {
+                tx_type: TxMessageType::Direct(iface),
+                packet: routed_packet,
+            }
+        } else {
+            // Broadcast (used for announces and packets with no known route)
+            TxMessage {
+                tx_type: TxMessageType::Broadcast(None),
+                packet: routed_packet,
+            }
         };
 
         self.send(message).await;
@@ -585,7 +613,11 @@ async fn send_to_next_hop<'a>(
     handler: &MutexGuard<'a, TransportHandler>,
     lookup: Option<AddressHash>,
 ) -> bool {
-    let (packet, maybe_iface) = handler.path_table.handle_inbound_packet(packet, lookup);
+    let (packet, maybe_iface) = handler
+        .path_table
+        .lock()
+        .await
+        .handle_inbound_packet(packet, lookup);
 
     if let Some(iface) = maybe_iface {
         handler
@@ -740,6 +772,8 @@ async fn handle_announce<'a>(
 
             handler
                 .path_table
+                .lock()
+                .await
                 .handle_announce(packet, packet.transport, iface);
         }
 
@@ -924,21 +958,29 @@ async fn handle_link_request<'a>(
         );
 
         handle_link_request_as_destination(destination, packet, handler).await;
-    } else if let Some(entry) = handler.path_table.next_hop_full(&packet.destination) {
-        log::trace!(
-            "tp({}): handle link request for remote destination {}",
-            handler.config.name,
-            packet.destination
-        );
-
-        let (next_hop, next_iface) = entry;
-        handle_link_request_as_intermediate(iface, next_hop, next_iface, packet, handler).await;
     } else {
-        log::trace!(
-            "tp({}): dropping link request to unknown destination {}",
-            handler.config.name,
-            packet.destination
-        );
+        // Check path table for next hop
+        let entry = handler
+            .path_table
+            .lock()
+            .await
+            .next_hop_full(&packet.destination);
+
+        if let Some((next_hop, next_iface)) = entry {
+            log::trace!(
+                "tp({}): handle link request for remote destination {}",
+                handler.config.name,
+                packet.destination
+            );
+
+            handle_link_request_as_intermediate(iface, next_hop, next_iface, packet, handler).await;
+        } else {
+            log::trace!(
+                "tp({}): dropping link request to unknown destination {}",
+                handler.config.name,
+                packet.destination
+            );
+        }
     }
 }
 

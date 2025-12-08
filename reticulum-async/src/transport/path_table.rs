@@ -106,7 +106,11 @@ impl PathTable {
         let (header_type, propagation_type, transport) = if remaining_hops > 1 {
             // Multi-hop: keep transport header with next hop
             log::trace!("Multi-hop routing: keeping Type2/Transport header");
-            (HeaderType::Type2, PropagationType::Transport, Some(entry.received_from))
+            (
+                HeaderType::Type2,
+                PropagationType::Transport,
+                Some(entry.received_from),
+            )
         } else if remaining_hops == 1 {
             // Final hop: STRIP transport header (Python does this at line 1350-1354)
             log::debug!("Final hop: stripping transport header to Type1/Broadcast");
@@ -120,14 +124,14 @@ impl PathTable {
         (
             Packet {
                 header: Header {
-                    ifac_flag: original_packet.header.ifac_flag,  // Preserve original IFAC flag
+                    ifac_flag: original_packet.header.ifac_flag, // Preserve original IFAC flag
                     header_type,
                     propagation_type,
                     destination_type: original_packet.header.destination_type,
                     packet_type: original_packet.header.packet_type,
                     hops: original_packet.header.hops + 1,
                 },
-                ifac: original_packet.ifac,  // Preserve original IFAC if present
+                ifac: original_packet.ifac, // Preserve original IFAC if present
                 destination: original_packet.destination,
                 transport,
                 context: original_packet.context,
@@ -170,16 +174,28 @@ impl PathTable {
         (
             Packet {
                 header: Header {
-                    ifac_flag: original_packet.header.ifac_flag,  // Always preserve original IFAC flag
-                    header_type: if is_multihop { HeaderType::Type2 } else { original_packet.header.header_type },
-                    propagation_type: if is_multihop { PropagationType::Transport } else { original_packet.header.propagation_type },
+                    ifac_flag: original_packet.header.ifac_flag, // Always preserve original IFAC flag
+                    header_type: if is_multihop {
+                        HeaderType::Type2
+                    } else {
+                        original_packet.header.header_type
+                    },
+                    propagation_type: if is_multihop {
+                        PropagationType::Transport
+                    } else {
+                        original_packet.header.propagation_type
+                    },
                     destination_type: original_packet.header.destination_type,
                     packet_type: original_packet.header.packet_type,
                     hops: original_packet.header.hops,
                 },
-                ifac: original_packet.ifac,  // Always preserve original IFAC if present
+                ifac: original_packet.ifac, // Always preserve original IFAC if present
                 destination: original_packet.destination,
-                transport: if is_multihop { Some(entry.received_from) } else { None },
+                transport: if is_multihop {
+                    Some(entry.received_from)
+                } else {
+                    None
+                },
                 context: original_packet.context,
                 data: original_packet.data,
             },

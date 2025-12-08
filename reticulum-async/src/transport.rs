@@ -378,6 +378,32 @@ impl Transport {
         self.handler.lock().await.in_links.get(link_id).cloned()
     }
 
+    pub async fn find_out_destination(
+        &self,
+        dest_hash: &AddressHash,
+    ) -> Option<(DestinationDesc, Vec<u8>)> {
+        let handler = self.handler.lock().await;
+
+        // Get the destination descriptor
+        let dest_desc = handler
+            .single_out_destinations
+            .get(dest_hash)
+            .and_then(|dest| dest.try_lock().ok().map(|d| d.desc))?;
+
+        // Get the app_data from the announce packet
+        let app_data = handler
+            .announce_table
+            .get(dest_hash)
+            .and_then(|packet| {
+                reticulum_core::destination::DestinationAnnounce::validate(packet)
+                    .ok()
+                    .map(|(_, app_data)| app_data.to_vec())
+            })
+            .unwrap_or_default();
+
+        Some((dest_desc, app_data))
+    }
+
     pub async fn link(&self, destination: DestinationDesc) -> Arc<Mutex<BroadcastLink>> {
         let link = self
             .handler
@@ -822,7 +848,7 @@ async fn handle_path_request<'a>(
         }
 
         if handler.config.retransmit {
-            if let Some(entry) = handler.path_table.get(&request.destination) {
+            if let Some(entry) = handler.path_table.get_mut().get(&request.destination) {
                 if let Some(requestor_id) = request.requesting_transport {
                     if requestor_id == entry.received_from {
                         log::trace!(

@@ -189,6 +189,10 @@ impl AnnounceTable {
             .map_or(None, |e| e.retransmit(transport_id))
     }
 
+    pub fn get(&self, dest_hash: &AddressHash) -> Option<&Packet> {
+        self.map.get(dest_hash).map(|entry| &entry.packet)
+    }
+
     pub fn to_retransmit(&mut self, transport_id: &AddressHash) -> Vec<TxMessage> {
         let mut messages = vec![];
         let mut completed = vec![];

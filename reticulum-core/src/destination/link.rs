@@ -123,6 +123,13 @@ pub enum LinkEvent {
     // Identity 240 bytes
     RemoteIdentified(Box<Identity>),
     Closed,
+    // Request, response and resource packets, left for the application to
+    // handle. Payload is decrypted, except for `PacketContext::Resource`:
+    // resource parts are encrypted by the resource itself.
+    Packet {
+        context: PacketContext,
+        payload: Box<LinkPayload>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -608,6 +615,31 @@ impl Link {
                     }
                 } else {
                     log::error!("link({}): received channel packet but have no channel", self.id);
+                }
+            }
+            PacketContext::Resource => {
+                log::trace!("link({}): resource part {}B", self.id, packet.data.len());
+                self.touch();
+
+                let payload = Box::new(LinkPayload::new_from_slice(packet.data.as_slice()));
+                self.post_event(event_tx, LinkEvent::Packet { context: packet.context, payload });
+            }
+            PacketContext::Request
+            | PacketContext::Response
+            | PacketContext::ResourceAdvertisement
+            | PacketContext::ResourceRequest
+            | PacketContext::ResourceHashUpdate
+            | PacketContext::ResourceInitiatorCancel
+            | PacketContext::ResourceReceiverCancel => {
+                let mut buffer = [0u8; PACKET_MDU];
+                if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
+                    log::trace!("link({}): {:?} {}B", self.id, packet.context, plain_text.len());
+                    self.touch();
+
+                    let payload = Box::new(LinkPayload::new_from_slice(plain_text));
+                    self.post_event(event_tx, LinkEvent::Packet { context: packet.context, payload });
+                } else {
+                    log::error!("link({}): can't decrypt {:?} packet", self.id, packet.context);
                 }
             }
             _ => {}
